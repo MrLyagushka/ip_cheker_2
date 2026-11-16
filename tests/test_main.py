@@ -6,8 +6,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 
 import config
 import main as app
-from utils import storage
-from utils import ping
+from utils import ping, storage
 
 
 def test_no_token_stops_immediately(monkeypatch):
@@ -34,3 +33,41 @@ def test_proxy_goes_only_to_telegram_session(data, monkeypatch):
 
 def test_dispatcher_type(dp):
     assert isinstance(dp, Dispatcher)
+
+
+def test_polling_recovers_after_crash(monkeypatch):
+    """Мёртвый прокси не должен убивать бота: polling перезапускается."""
+    import main as app
+    from utils import proxy_watch
+
+    attempts = []
+    recovered = []
+
+    class FakeDispatcher:
+        async def start_polling(self, bot):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise RuntimeError("Cannot connect to proxy")
+
+    async def fake_recover(bot):
+        recovered.append(1)
+        return True
+
+    async def fake_sleep(delay):
+        return None
+
+    monkeypatch.setattr(proxy_watch, "try_recover", fake_recover)
+    monkeypatch.setattr(app.asyncio, "sleep", fake_sleep)
+    asyncio.run(app.run_polling(FakeDispatcher(), bot=None))
+    assert len(attempts) == 3
+    assert len(recovered) == 2
+
+
+def test_polling_stops_cleanly(monkeypatch):
+    import main as app
+
+    class FakeDispatcher:
+        async def start_polling(self, bot):
+            return None                      # SIGTERM: штатный выход
+
+    asyncio.run(app.run_polling(FakeDispatcher(), bot=None))

@@ -7,7 +7,7 @@ def buttons(markup):
 
 def test_main_menu():
     data = {button.callback_data for button in buttons(inline.main_menu())}
-    assert data == {"scan:start", "hist:show", "mon:list", "help"}
+    assert data == {"scan:start", "hist:show", "mon:list", "px:list", "help"}
 
 
 def test_myips_callback_data_fits_telegram_limit():

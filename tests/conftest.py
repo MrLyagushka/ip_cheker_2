@@ -21,10 +21,10 @@ os.environ["ENV_FILE"] = str(ROOT / "tests" / "_no_such_file.env")
 os.environ["TOKEN"] = "42:TEST"
 os.environ["ADMIN_ID"] = "1"
 os.environ["ALERT_CHAT_ID"] = "-1001"
+os.environ["ALERT_THREAD_ID"] = "77"
 os.environ["PROXY_URL"] = ""
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="ipcheker-tests-")
 
-from handlers import admin
 import pytest  # noqa: E402
 from aiogram import Bot  # noqa: E402
 from aiogram.types import CallbackQuery, Chat, Message, Update, User  # noqa: E402
@@ -48,6 +48,8 @@ class FakeBot(Bot):
             exc = queue.pop(0)
             if exc is not None:
                 raise exc
+        if name == "GetMe":
+            return User(id=42, is_bot=True, first_name="TestBot", username="test_bot")
         if name in ("SendMessage", "EditMessageText", "SendDocument"):
             self._mid += 1
             return Message(
@@ -81,20 +83,29 @@ def _user(uid: int) -> User:
     return User(id=uid, is_bot=False, first_name="Test", username=f"u{uid}")
 
 
-def message_update(text: str, uid: int = 1, chat_id: int | None = None, message_id: int = 1) -> Update:
+def message_update(
+    text: str, uid: int = 1, chat_id: int | None = None, message_id: int = 1,
+    thread_id: int | None = None, chat_type: str = "private",
+) -> Update:
+    """thread_id + chat_type='supergroup' — сообщение из темы супергруппы."""
     return Update(
         update_id=message_id,
         message=Message(
             message_id=message_id,
             date=datetime.now(),
-            chat=Chat(id=chat_id if chat_id is not None else uid, type="private"),
+            chat=Chat(id=chat_id if chat_id is not None else uid, type=chat_type),
             from_user=_user(uid),
             text=text,
+            message_thread_id=thread_id,
+            is_topic_message=True if thread_id else None,
         ),
     )
 
 
-def callback_update(data: str, uid: int = 1, chat_id: int | None = None, message_id: int = 1) -> Update:
+def callback_update(
+    data: str, uid: int = 1, chat_id: int | None = None, message_id: int = 1,
+    thread_id: int | None = None, chat_type: str = "private",
+) -> Update:
     return Update(
         update_id=1000 + message_id,
         callback_query=CallbackQuery(
@@ -105,9 +116,11 @@ def callback_update(data: str, uid: int = 1, chat_id: int | None = None, message
             message=Message(
                 message_id=message_id,
                 date=datetime.now(),
-                chat=Chat(id=chat_id if chat_id is not None else uid, type="private"),
+                chat=Chat(id=chat_id if chat_id is not None else uid, type=chat_type),
                 from_user=_user(uid),
                 text="меню",
+                message_thread_id=thread_id,
+                is_topic_message=True if thread_id else None,
             ),
         ),
     )
@@ -117,20 +130,22 @@ def callback_update(data: str, uid: int = 1, chat_id: int | None = None, message
 def data(tmp_path, monkeypatch):
     """Каждый тест получает свою папку данных."""
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(config, "USERS_FILE", tmp_path / "users.json")
-    monkeypatch.setattr(config, "HISTORY_FILE", tmp_path / "history.json")
-    monkeypatch.setattr(config, "TRACKED_FILE", tmp_path / "tracked.json")
-    monkeypatch.setattr(config, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(config, "DB_FILE", tmp_path / "bot.db")
     monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
     monkeypatch.setattr(config, "LOG_FILE", tmp_path / "logs" / "bot.log")
+    monkeypatch.setattr(config, "LEGACY_FILES", {
+        kind: tmp_path / f"{kind}.json" for kind in ("users", "history", "tracked", "settings")
+    })
+    storage.close()
     storage.init()
     yield tmp_path
+    storage.close()
     storage.KNOWN_USERS.clear()
 
 
 @pytest.fixture(autouse=True)
 def clean_runtime():
-    from handlers import scan
+    from handlers import admin, scan
 
     scan.BUSY.clear()
     scan.CANCELS.clear()
@@ -184,6 +199,19 @@ def sleeps(monkeypatch):
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     return recorded
+
+
+@pytest.fixture
+def track():
+    """Посев списка мониторинга: {uid: [(ip, status), ...]}."""
+    def _track(mapping):
+        async def scenario():
+            for uid, items in mapping.items():
+                for ip, status in items:
+                    await storage.add_tracked(int(uid), ip)
+                    await storage.save_tracked({str(uid): [{"ip": ip, "status": status}]})
+        asyncio.run(scenario())
+    return _track
 
 
 @pytest.fixture

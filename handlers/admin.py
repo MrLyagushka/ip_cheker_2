@@ -17,9 +17,7 @@ from aiogram.types import CallbackQuery, Message
 import config
 from handlers import scan as scan_handler
 from keyboards import inline
-from utils import text
-from utils import sender
-from utils import storage
+from utils import sender, storage, text
 
 log = logging.getLogger(__name__)
 router = Router(name="admin")
@@ -36,11 +34,11 @@ class AdminSG(StatesGroup):
 
 
 def panel_text() -> str:
-    settings = config.load_settings()
+    settings = storage.load_settings()
     return (
         "🛠 Админ-панель\n"
         f"Лимит одновременных пингов: {settings['ping_limit']}\n"
-        f"Прокси: {text.esc(settings.get('proxy') or 'нет')}\n\n"
+        f"Прокси: {text.esc(text.mask_proxy(settings.get('proxy')))}\n\n"
         "Лимит применяется со следующего скана.\n"
         "Прокси — после перезапуска бота."
     )
@@ -50,7 +48,7 @@ def panel_text() -> str:
 async def cmd_admin(message: Message) -> None:
     await sender.safe_send(
         message.bot, message.chat.id, panel_text(),
-        reply_markup=inline.admin_menu(config.load_settings()),
+        reply_markup=inline.admin_menu(storage.load_settings()), **sender.thread_kwargs(message),
     )
 
 
@@ -58,14 +56,14 @@ async def cmd_admin(message: Message) -> None:
 async def cb_stats(callback: CallbackQuery) -> None:
     body = text.stats_text(
         storage.all_users(),
-        storage.read_json(config.HISTORY_FILE, {}),
+        storage.all_history(),
         storage.all_tracked(),
         len(scan_handler.BUSY),
     )
     if callback.message:
         await sender.safe_edit(
             callback.bot, callback.message.chat.id, callback.message.message_id,
-            body, reply_markup=inline.admin_menu(config.load_settings()),
+            body, reply_markup=inline.admin_menu(storage.load_settings()),
         )
     await callback.answer()
 
@@ -87,14 +85,15 @@ async def got_limit(message: Message, state: FSMContext) -> None:
     value = config.to_int(message.text, 0)
     if not 1 <= value <= config.PING_LIMIT_MAX:
         await sender.safe_send(
-            message.bot, message.chat.id, f"⚠️ Нужно число 1…{config.PING_LIMIT_MAX}"
+            message.bot, message.chat.id, f"⚠️ Нужно число 1…{config.PING_LIMIT_MAX}",
+            **sender.thread_kwargs(message),
         )
         return
     await storage.save_settings({"ping_limit": value})
     await sender.safe_send(
         message.bot, message.chat.id,
         f"✅ Лимит пингов: {value}. Применится со следующего скана.",
-        reply_markup=inline.back(),
+        reply_markup=inline.back(), **sender.thread_kwargs(message),
     )
 
 
@@ -115,12 +114,16 @@ async def got_proxy(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     value = "" if raw.lower() in ("off", "нет", "-") else raw
     if value and "://" not in value:
-        await sender.safe_send(message.bot, message.chat.id, "⚠️ Формат: socks5://host:port или off")
+        await sender.safe_send(
+            message.bot, message.chat.id, "⚠️ Формат: socks5://host:port или off",
+            **sender.thread_kwargs(message),
+        )
         return
     await storage.save_settings({"proxy": value})
     await sender.safe_send(
         message.bot, message.chat.id,
         "✅ Записал. Прокси применится после перезапуска бота.", reply_markup=inline.back(),
+        **sender.thread_kwargs(message),
     )
 
 
@@ -165,7 +168,7 @@ async def got_broadcast(message: Message, state: FSMContext) -> None:
     chat_ids = [config.to_int(uid, 0) for uid in storage.all_users()]
     head = await sender.send(
         message.bot, message.chat.id, f"📣 Рассылаю {len(chat_ids)} пользователям…",
-        reply_markup=inline.broadcast_cancel(),
+        reply_markup=inline.broadcast_cancel(), **sender.thread_kwargs(message),
     )
     # parse_mode=None: текст админа отправляем как есть, без риска HTML-ошибок
     sent, failed = await sender.broadcast(

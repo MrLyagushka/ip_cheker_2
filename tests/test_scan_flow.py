@@ -4,8 +4,7 @@ import pytest
 
 import config
 from handlers import scan
-from utils import storage
-from utils import ping
+from utils import ping, storage
 
 
 def test_scan_host_saves_history(data, bot, monkeypatch):

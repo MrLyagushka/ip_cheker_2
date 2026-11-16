@@ -1,5 +1,3 @@
-import json
-
 import config
 
 
@@ -24,27 +22,35 @@ def test_to_int_never_raises():
     assert config.to_int("", 4) == 4
 
 
-def test_settings_defaults(data):
-    settings = config.load_settings()
-    assert settings["ping_limit"] == config.PING_LIMIT_DEFAULT
+def test_unquote_removes_wrapping_quotes():
+    assert config.unquote('"socks5://u:p@h:1"') == "socks5://u:p@h:1"
+    assert config.unquote("'socks5://u:p@h:1'") == "socks5://u:p@h:1"
+    assert config.unquote("  socks5://u:p@h:1  ") == "socks5://u:p@h:1"
+    assert config.unquote("socks5://u:p@h:1") == "socks5://u:p@h:1"
+    assert config.unquote("") == ""
 
 
-def test_settings_merge_and_clamp(data):
-    config.SETTINGS_FILE.write_text(json.dumps({"ping_limit": 9999, "proxy": "socks5://h:1"}), "utf-8")
-    settings = config.load_settings()
-    assert settings["ping_limit"] == config.PING_LIMIT_MAX
-    assert settings["proxy"] == "socks5://h:1"
+def test_env_value_with_quotes_is_cleaned(monkeypatch):
+    """Главная причина «бот не стартует в Docker»: кавычки доезжают из env_file."""
+    monkeypatch.setenv("PROXY_URL", '"socks5://admin:secret@162.35.229.164:1080"')
+    assert config._get("PROXY_URL") == "socks5://admin:secret@162.35.229.164:1080"
+    from aiohttp_socks.utils import parse_proxy_url
 
-    config.SETTINGS_FILE.write_text(json.dumps({"ping_limit": 0}), "utf-8")
-    assert config.load_settings()["ping_limit"] == 1
-
-    config.SETTINGS_FILE.write_text(json.dumps({"ping_limit": "мусор"}), "utf-8")
-    assert config.load_settings()["ping_limit"] == config.PING_LIMIT_DEFAULT
+    proxy_type, host, port, login, password = parse_proxy_url(config._get("PROXY_URL"))
+    assert (host, port, login) == ("162.35.229.164", 1080, "admin")
 
 
-def test_settings_broken_file_falls_back(data):
-    config.SETTINGS_FILE.write_text("{не json", "utf-8")
-    assert config.load_settings()["ping_limit"] == config.PING_LIMIT_DEFAULT
+def test_clamp_limit():
+    assert config.clamp_limit(64) == 64
+    assert config.clamp_limit(0) == 1
+    assert config.clamp_limit(9999) == config.PING_LIMIT_MAX
+    assert config.clamp_limit("мусор") == config.PING_LIMIT_DEFAULT
+
+
+def test_proxy_network_defaults():
+    assert config.PROXY_PORT == 1080
+    assert config.PROXY_CHECK_INTERVAL == 60
+    assert config.PROXY_WAIT_HOURS == 24
 
 
 def test_admin_and_alert_ids_from_env():

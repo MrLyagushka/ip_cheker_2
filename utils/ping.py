@@ -34,6 +34,11 @@ async def ping_one(ip: str) -> tuple[str, bool]:
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=TIMEOUT)
         if proc.returncode != 0:
+            # 1 = адрес не ответил; 2+ = ошибка самого ping (права/аргументы).
+            # В Docker это главный признак «ICMP запрещён», а не «хост лежит».
+            if not IS_WINDOWS and proc.returncode >= 2:
+                log.error("ping %s: код %s — проблема окружения (запусти python -m utils.selfcheck)",
+                          ip, proc.returncode)
             return ip, False
         if IS_WINDOWS:
             # Windows умеет вернуть 0 при "Destination host unreachable".
@@ -72,7 +77,7 @@ async def ping_many(
     results: dict[str, bool] = {}
     total = len(ips)
     done = 0
-    last_report = 0.0
+    last_report = time.monotonic()  # отсчёт от старта скана, а не от нуля
 
     async def one(ip: str) -> None:
         nonlocal done, last_report

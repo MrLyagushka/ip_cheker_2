@@ -5,8 +5,7 @@
 import asyncio
 
 import config
-from utils import storage
-from utils import ping
+from utils import ping, storage
 
 
 async def feed(dp, bot, updates):
@@ -102,7 +101,7 @@ def test_admin_can_change_ping_limit(dp, data, bot, msg, cb):
         cb("adm:limit", uid=config.ADMIN_ID),
         msg("64", uid=config.ADMIN_ID, message_id=3),
     ]))
-    assert config.load_settings()["ping_limit"] == 64
+    assert storage.load_settings()["ping_limit"] == 64
     assert any("Лимит пингов: 64" in text for text in bot.texts())
 
 
@@ -111,7 +110,7 @@ def test_admin_limit_rejects_garbage(dp, data, bot, msg, cb):
         cb("adm:limit", uid=config.ADMIN_ID),
         msg("много", uid=config.ADMIN_ID, message_id=2),
     ]))
-    assert config.load_settings()["ping_limit"] == config.PING_LIMIT_DEFAULT
+    assert storage.load_settings()["ping_limit"] == config.PING_LIMIT_DEFAULT
     assert any("Нужно число" in text for text in bot.texts())
 
 
@@ -143,10 +142,70 @@ def test_wiring_middleware_and_routers(dp):
 
     assert any(isinstance(m, UserMiddleware) for m in dp.update.outer_middleware)
     names = [r.name for r in dp.sub_routers]
-    assert names == ["start", "scan", "history", "monitor", "admin"]
+    assert names == ["start", "scan", "history", "monitor", "proxy", "admin"]
 
 
 def test_unwatch_shows_same_list(dp, data, bot, msg):
     asyncio.run(feed(dp, bot, [msg("/watch 8.8.8.8", uid=55), msg("/unwatch", uid=55, message_id=2)]))
     assert "8.8.8.8" in bot.sent[-1].text
     assert any(b.callback_data == "mon:rm:0" for row in bot.sent[-1].reply_markup.inline_keyboard for b in row)
+
+
+def test_get_proxy_issues_command_and_waits_for_ip(dp, data, bot, msg):
+    asyncio.run(feed(dp, bot, [msg("/get_proxy", uid=55)]))
+    body = bot.sent[0].text
+    assert "docker run -d --name socks5 --restart always -p 1080:1080" in body
+    assert "PROXY_USER=u" in body and "PROXY_PASSWORD=" in body
+    assert "serjs/go-socks5-proxy" in body
+    assert storage.all_proxies() == []          # пока только команда, IP ещё не пришёл
+
+    asyncio.run(feed(dp, bot, [msg("162.35.229.164", uid=55, message_id=2)]))
+    records = storage.all_proxies()
+    assert len(records) == 1
+    assert records[0]["host"] == "162.35.229.164"
+    assert records[0]["owner"] == 55
+    assert records[0]["status"] == "waiting"
+    assert "Жду запуска" in bot.sent[-1].text
+
+
+def test_get_proxy_with_ip_argument(dp, data, bot, msg):
+    asyncio.run(feed(dp, bot, [msg("/get_proxy 1.2.3.4", uid=55)]))
+    assert storage.all_proxies()[0]["host"] == "1.2.3.4"
+
+
+def test_get_proxy_rejects_bad_ip(dp, data, bot, msg):
+    asyncio.run(feed(dp, bot, [msg("/get_proxy", uid=55), msg("не_ip", uid=55, message_id=2)]))
+    assert storage.all_proxies() == []
+    assert "не похож на IPv4" in bot.sent[-1].text
+
+
+def test_proxies_list_is_private_to_owner(dp, data, bot, msg):
+    asyncio.run(feed(dp, bot, [msg("/get_proxy 1.2.3.4", uid=55), msg("/get_proxy 5.6.7.8", uid=66, message_id=2)]))
+    asyncio.run(feed(dp, bot, [msg("/proxies", uid=55, message_id=3)]))
+    assert "1.2.3.4" in bot.sent[-1].text
+    assert "5.6.7.8" not in bot.sent[-1].text     # чужой прокси не показываем
+
+
+def test_admin_sees_all_proxies(dp, data, bot, msg):
+    asyncio.run(feed(dp, bot, [msg("/get_proxy 1.2.3.4", uid=55), msg("/proxies", uid=config.ADMIN_ID, message_id=2)]))
+    assert "1.2.3.4" in bot.sent[-1].text
+
+
+def test_owner_can_remove_proxy_by_button(dp, data, bot, msg, cb):
+    asyncio.run(feed(dp, bot, [msg("/get_proxy 1.2.3.4", uid=55)]))
+    proxy_id = storage.all_proxies()[0]["id"]
+    asyncio.run(feed(dp, bot, [cb(f"px:rm:{proxy_id}", uid=66)]))   # чужой
+    assert len(storage.all_proxies()) == 1
+    asyncio.run(feed(dp, bot, [cb(f"px:rm:{proxy_id}", uid=55)]))   # владелец
+    assert storage.all_proxies() == []
+
+
+def test_proxy_requests_are_limited_per_user(dp, data, bot, msg, monkeypatch):
+    monkeypatch.setattr(config, "PROXY_MAX_PER_USER", 2)
+    asyncio.run(feed(dp, bot, [
+        msg("/get_proxy 1.2.3.4", uid=55),
+        msg("/get_proxy 5.6.7.8", uid=55, message_id=2),
+        msg("/get_proxy 9.9.9.9", uid=55, message_id=3),
+    ]))
+    assert len(storage.all_proxies()) == 2
+    assert "лимит" in bot.sent[-1].text

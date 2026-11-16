@@ -37,13 +37,15 @@ async def tick(bot) -> dict[str, tuple[str, str]]:
     if not ips:
         return {}
 
-    results = await ping.ping_many(ips, limit=config.load_settings()["ping_limit"])
+    results = await ping.ping_many(ips, limit=storage.load_settings()["ping_limit"])
 
     changes: dict[str, tuple[str, str]] = {}
     for uid, items in tracked.items():
         try:  # один проблемный пользователь не мешает остальным
             for item in items:
-                ip = item["ip"]
+                ip = item.get("ip")
+                if not ip:
+                    continue
                 new = "up" if results.get(ip) else "down"
                 old = item.get("status", "unknown")
                 # первое наблюдение (unknown) — не алертим, иначе спам при /watch

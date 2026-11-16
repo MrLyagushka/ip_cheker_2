@@ -5,5 +5,8 @@ __pycache__/
 .pytest_cache/
 .env
 data/
+*.db
+*.db-wal
+*.db-shm
 *.log
 *.jsonl

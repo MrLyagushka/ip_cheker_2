@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime
 
 MAX_TEXT = 3500  # лимит Telegram — 4096, берём с запасом
@@ -16,6 +17,18 @@ def cut(text: str) -> str:
     if len(text) <= MAX_TEXT:
         return text
     return text[: MAX_TEXT - 15].rstrip() + "\n…(обрезано)"
+
+
+def mask_proxy(url: str | None) -> str:
+    """Показываем адрес прокси, но не пароль (он попадает в логи и в чат)."""
+    if not url:
+        return "нет"
+    return re.sub(r"://([^:/@]+):([^@]+)@", r"://\1:***@", url)
+
+
+def mention(uid: int, name: str | None) -> str:
+    """HTML-упоминание: работает даже если у человека нет username."""
+    return f'<a href="tg://user?id={uid}">{esc(name or "участник")}</a>'
 
 
 def icon(alive: bool) -> str:
@@ -94,3 +107,31 @@ def stats_text(users: dict, history: dict, tracked: dict, busy: int) -> str:
         f"IP в мониторинге: {ips}\n"
         f"Сканов идёт сейчас: {busy}"
     )
+
+
+PROXY_STATUS = {"waiting": "ждём запуска", "up": "работает", "down": "не отвечает", "expired": "заявка снята"}
+PROXY_MARK = {"waiting": "⏳", "up": "✅", "down": "❌", "expired": "⌛"}
+
+
+def proxy_invite(command: str) -> str:
+    return (
+        "🤝 Подними свой SOCKS5 для бота — одна команда на твоём сервере:\n\n"
+        f"<code>{esc(command)}</code>\n\n"
+        "Порт 1080 должен быть открыт снаружи (firewall / security group).\n"
+        "Бот сам дождётся запуска и напишет в чат уведомлений, когда прокси заработает."
+    )
+
+
+def proxies_text(records: list[dict], is_admin: bool = False) -> str:
+    if not records:
+        return "🛰 Прокси пока нет. Взять команду: /get_proxy"
+    lines = ["🛰 Прокси участников:"]
+    for record in records:
+        status = record.get("status", "waiting")
+        owner = f" · {esc(record.get('owner_name') or record.get('owner'))}" if is_admin else ""
+        lines.append(
+            f"{PROXY_MARK.get(status, '?')} {esc(record['host'])}:{record['port']} — "
+            f"{PROXY_STATUS.get(status, status)}{owner}"
+        )
+    lines.append("\n❌ — убрать прокси из списка.")
+    return cut("\n".join(lines))

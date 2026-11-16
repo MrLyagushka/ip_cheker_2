@@ -14,10 +14,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
-import config
 from keyboards import inline
-from utils import ips as ips_tools, ping, sender, storage
-from utils import text
+from utils import ips as ips_tools
+from utils import ping, sender, storage, text
 
 log = logging.getLogger(__name__)
 router = Router(name="scan")
@@ -34,12 +33,16 @@ class ScanSG(StatesGroup):
 async def cmd_scan(message: Message, command: CommandObject, state: FSMContext) -> None:
     if command.args:
         await state.clear()
-        await run_scan(message.bot, message.chat.id, message.from_user.id, command.args)
+        await run_scan(
+            message.bot, message.chat.id, message.from_user.id, command.args,
+            thread_id=message.message_thread_id,
+        )
         return
     await state.set_state(ScanSG.wait_target)
     await sender.safe_send(
         message.bot, message.chat.id,
         "Пришли IPv4 (8.8.8.8) или сеть (192.168.0.0)", reply_markup=inline.back(),
+        **sender.thread_kwargs(message),
     )
 
 
@@ -57,7 +60,10 @@ async def cb_scan_start(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(ScanSG.wait_target)
 async def got_target(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await run_scan(message.bot, message.chat.id, message.from_user.id, message.text or "")
+    await run_scan(
+        message.bot, message.chat.id, message.from_user.id, message.text or "",
+        thread_id=message.message_thread_id,
+    )
 
 
 @router.callback_query(F.data == "scan:cancel")
@@ -70,17 +76,22 @@ async def cb_scan_cancel(callback: CallbackQuery) -> None:
     await callback.answer("Отменяю…")
 
 
-async def run_scan(bot, chat_id: int, uid: int, raw: str) -> None:
-    """Вся последовательность скана. Вызывается и из команды, и из FSM-ввода."""
+async def run_scan(bot, chat_id: int, uid: int, raw: str, thread_id: int | None = None) -> None:
+    """Вся последовательность скана. Вызывается и из команды, и из FSM-ввода.
+
+    thread_id — тема супергруппы, если команду написали в теме (в личке None).
+    """
+    thread = {"message_thread_id": thread_id} if thread_id else {}
     try:
         targets, kind = ips_tools.parse_target(raw)
     except ValueError as exc:
-        await sender.safe_send(bot, chat_id, f"⚠️ {exc}")
+        await sender.safe_send(bot, chat_id, f"⚠️ {exc}", **thread)
         return
 
     if uid in BUSY:
         await sender.safe_send(
-            bot, chat_id, "⏳ У тебя уже идёт сканирование. Дождись конца или нажми «Отмена»."
+            bot, chat_id, "⏳ У тебя уже идёт сканирование. Дождись конца или нажми «Отмена».",
+            **thread,
         )
         return
 
@@ -91,7 +102,7 @@ async def run_scan(bot, chat_id: int, uid: int, raw: str) -> None:
     try:
         head = await sender.send(
             bot, chat_id, f"🔍 Проверяю {len(targets)} адрес(ов)…",
-            reply_markup=inline.cancel_scan() if kind == "subnet" else None,
+            reply_markup=inline.cancel_scan() if kind == "subnet" else None, **thread,
         )
         head_id = head.message_id if isinstance(head, Message) else None
 
@@ -104,7 +115,7 @@ async def run_scan(bot, chat_id: int, uid: int, raw: str) -> None:
 
         results = await ping.ping_many(
             targets,
-            limit=config.load_settings()["ping_limit"],
+            limit=storage.load_settings()["ping_limit"],
             progress=progress if kind == "subnet" else None,
             cancel=cancel,
         )
@@ -123,9 +134,9 @@ async def run_scan(bot, chat_id: int, uid: int, raw: str) -> None:
 
     if kind == "subnet":
         path = storage.save_result(uid, text.result_file(label, results))
-        await sender.safe_document(bot, chat_id, FSInputFile(path), caption=summary)
+        await sender.safe_document(bot, chat_id, FSInputFile(path), caption=summary, **thread)
 
     if head_id is not None:
         await sender.safe_edit(bot, chat_id, head_id, summary, reply_markup=inline.back())
     else:
-        await sender.safe_send(bot, chat_id, summary, reply_markup=inline.back())
+        await sender.safe_send(bot, chat_id, summary, reply_markup=inline.back(), **thread)

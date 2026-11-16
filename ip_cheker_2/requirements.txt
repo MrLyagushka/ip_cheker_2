@@ -1,5 +1,0 @@
-aiogram==3.31.0
-aiohttp-socks==0.12.0
-
-# только для тестов: pip install pytest
-# pytest

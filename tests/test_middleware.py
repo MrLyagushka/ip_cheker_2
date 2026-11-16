@@ -24,19 +24,19 @@ def test_new_user_is_registered(data):
 
 def test_known_user_does_not_touch_disk(data, monkeypatch):
     writes = []
-    original = storage.write_json
+    original = storage.run
 
-    async def counted(path, payload):
-        writes.append(path.name)
-        await original(path, payload)
+    def counted(sql, params=()):
+        writes.append(sql.split()[0])
+        return original(sql, params)
 
-    monkeypatch.setattr(storage, "write_json", counted)
+    monkeypatch.setattr(storage, "run", counted)
     middleware = UserMiddleware()
     user = User(id=7, is_bot=False, first_name="A")
     call(middleware, {"event_from_user": user})
     call(middleware, {"event_from_user": user})
     call(middleware, {"event_from_user": user})
-    assert writes == ["users.json"]
+    assert writes == ["INSERT"]  # один INSERT на нового, ноль на повторных
 
 
 def test_update_without_user_passes_through(data):

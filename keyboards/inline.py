@@ -14,8 +14,9 @@ def main_menu() -> InlineKeyboardMarkup:
     kb.button(text="🔍 Сканировать", callback_data="scan:start")
     kb.button(text="🕓 История", callback_data="hist:show")
     kb.button(text="📡 Мои IP", callback_data="mon:list")
+    kb.button(text="🛰 Прокси", callback_data="px:list")
     kb.button(text="❓ Помощь", callback_data="help")
-    kb.adjust(2, 2)
+    kb.adjust(2, 2, 1)
     return kb.as_markup()
 
 
@@ -73,4 +74,16 @@ def admin_menu(settings: dict) -> InlineKeyboardMarkup:
 def broadcast_cancel() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="⛔ Отменить рассылку", callback_data="adm:bc:cancel")
+    return kb.as_markup()
+
+
+def proxies_list(records: list[dict], is_admin: bool = False) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for record in records:
+        kb.button(text=f"❌ {record['host']}:{record['port']}", callback_data=f"px:rm:{record['id']}")
+        if is_admin and record.get("status") == "up":
+            kb.button(text=f"🔌 Подключить {record['host']}", callback_data=f"px:use:{record['id']}")
+    kb.button(text="➕ Получить команду", callback_data="px:new")
+    kb.button(text="⬅️ Меню", callback_data="menu")
+    kb.adjust(1)
     return kb.as_markup()

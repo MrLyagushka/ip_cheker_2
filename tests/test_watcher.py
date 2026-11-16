@@ -1,9 +1,7 @@
 import asyncio
 
 import config
-from utils import watcher
-from utils import ping
-from utils import storage
+from utils import ping, storage, watcher
 
 
 def patch_ping(monkeypatch, results):
@@ -17,23 +15,23 @@ def patch_ping(monkeypatch, results):
     return calls
 
 
-def test_tick_without_ips_does_nothing(data, bot, monkeypatch):
+def test_tick_without_ips_does_nothing(data, bot, monkeypatch, track):
     calls = patch_ping(monkeypatch, {})
     assert asyncio.run(watcher.tick(bot)) == {}
     assert calls == []
     assert bot.sent == []
 
 
-def test_first_observation_is_silent(data, bot, monkeypatch):
-    asyncio.run(storage.save_tracked({"1": [{"ip": "1.1.1.1", "status": "unknown"}]}))
+def test_first_observation_is_silent(data, bot, monkeypatch, track):
+    track({"1": [("1.1.1.1", "unknown")]})
     patch_ping(monkeypatch, {"1.1.1.1": True})
     assert asyncio.run(watcher.tick(bot)) == {}
     assert bot.sent == []
     assert storage.get_tracked(1)[0]["status"] == "up"
 
 
-def test_status_change_goes_to_group(data, bot, monkeypatch):
-    asyncio.run(storage.save_tracked({"1": [{"ip": "1.1.1.1", "status": "up"}]}))
+def test_status_change_goes_to_group(data, bot, monkeypatch, track):
+    track({"1": [("1.1.1.1", "up")]})
     patch_ping(monkeypatch, {"1.1.1.1": False})
     changes = asyncio.run(watcher.tick(bot))
     assert changes == {"1.1.1.1": ("up", "down")}
@@ -43,18 +41,15 @@ def test_status_change_goes_to_group(data, bot, monkeypatch):
     assert storage.get_tracked(1)[0]["status"] == "down"
 
 
-def test_stable_status_is_silent(data, bot, monkeypatch):
-    asyncio.run(storage.save_tracked({"1": [{"ip": "1.1.1.1", "status": "up"}]}))
+def test_stable_status_is_silent(data, bot, monkeypatch, track):
+    track({"1": [("1.1.1.1", "up")]})
     patch_ping(monkeypatch, {"1.1.1.1": True})
     assert asyncio.run(watcher.tick(bot)) == {}
     assert bot.sent == []
 
 
-def test_shared_ip_pings_once_and_alerts_once(data, bot, monkeypatch):
-    asyncio.run(storage.save_tracked({
-        "1": [{"ip": "1.1.1.1", "status": "up"}],
-        "2": [{"ip": "1.1.1.1", "status": "up"}, {"ip": "2.2.2.2", "status": "down"}],
-    }))
+def test_shared_ip_pings_once_and_alerts_once(data, bot, monkeypatch, track):
+    track({"1": [("1.1.1.1", "up")], "2": [("1.1.1.1", "up"), ("2.2.2.2", "down")]})
     calls = patch_ping(monkeypatch, {"1.1.1.1": False, "2.2.2.2": True})
     changes = asyncio.run(watcher.tick(bot))
     assert calls == [["1.1.1.1", "2.2.2.2"]]  # дедупликация: один пинг на адрес
@@ -63,20 +58,18 @@ def test_shared_ip_pings_once_and_alerts_once(data, bot, monkeypatch):
     assert storage.get_tracked(2)[1]["status"] == "up"
 
 
-def test_broken_user_does_not_break_others(data, bot, monkeypatch):
-    asyncio.run(storage.save_tracked({
-        "1": [{"ip": "1.1.1.1", "status": "up"}],
-        "2": [{"нет_ip": True}],
-    }))
+def test_broken_user_does_not_break_others(data, bot, monkeypatch, track):
+    track({"1": [("1.1.1.1", "up")]})
+    storage.run("INSERT INTO tracked(uid, ip, status) VALUES(2, NULL, 'up')")  # битая запись
     patch_ping(monkeypatch, {"1.1.1.1": False})
     changes = asyncio.run(watcher.tick(bot))
     assert changes == {"1.1.1.1": ("up", "down")}
     assert storage.get_tracked(1)[0]["status"] == "down"
 
 
-def test_no_alert_chat_configured(data, bot, monkeypatch):
+def test_no_alert_chat_configured(data, bot, monkeypatch, track):
     monkeypatch.setattr(config, "ALERT_CHAT_ID", 0)
-    asyncio.run(storage.save_tracked({"1": [{"ip": "1.1.1.1", "status": "up"}]}))
+    track({"1": [("1.1.1.1", "up")]})
     patch_ping(monkeypatch, {"1.1.1.1": False})
     assert asyncio.run(watcher.tick(bot)) == {"1.1.1.1": ("up", "down")}
     assert bot.sent == []
