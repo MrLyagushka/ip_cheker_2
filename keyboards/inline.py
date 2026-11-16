@@ -20,6 +20,12 @@ def main_menu() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def private_link(url: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔒 Получить команду в личке", url=url)
+    return kb.as_markup()
+
+
 def back() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="⬅️ Меню", callback_data="menu")

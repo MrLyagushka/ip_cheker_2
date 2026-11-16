@@ -41,10 +41,10 @@ def scan_summary(label: str, kind: str, results: dict[str, bool], cancelled: boo
         body = f"{icon(alive)} {esc(label)} — {'доступен' if alive else 'недоступен'}"
     else:
         alive_count = sum(1 for ok in results.values() if ok)
-        body = (
-            f"🌐 Сеть {esc(label)}\n"
-            f"Доступны: {alive_count} из {len(results)} проверенных"
-        )
+        head = f"🌐 Сеть {esc(label)}" if kind == "subnet" else f"🔍 {esc(label)}"
+        body = f"{head}\nДоступны: {alive_count} из {len(results)} проверенных"
+        if kind == "multi" and len(results) <= 10:
+            body += "\n" + "\n".join(f"{icon(ok)} {esc(ip)}" for ip, ok in results.items())
     if cancelled:
         body += "\n⛔ Отменено: проверена только часть адресов"
     return body
@@ -62,7 +62,7 @@ def history_text(items: list[dict]) -> str:
         return "🕓 История пуста. Начни со /scan"
     lines = ["🕓 Последние сканы:"]
     for item in reversed(items[-20:]):  # свежие сверху
-        kind = "сеть" if item.get("type") == "subnet" else "IP"
+        kind = {"subnet": "сеть", "multi": "список"}.get(item.get("type"), "IP")
         lines.append(
             f"{esc(item.get('ts', ''))} · {kind} {esc(item.get('target', ''))} · "
             f"{item.get('up', 0)}/{item.get('total', 0)} доступны"
@@ -79,6 +79,28 @@ def myips_text(items: list[dict]) -> str:
         lines.append(f"{index}. {marks.get(item.get('status'), '❔')} {esc(item.get('ip', ''))}")
     lines.append("\nНажми ❌, чтобы убрать адрес из списка.")
     return cut("\n".join(lines))
+
+
+def watch_report(added: list[str], dup: list[str], failed: list[str]) -> str:
+    lines = []
+    if added:
+        lines.append("✅ Добавлены: " + esc(", ".join(added)))
+    if dup:
+        lines.append("ℹ️ Уже были в списке: " + esc(", ".join(dup)))
+    if failed:
+        lines.append("⚠️ Не добавлены: " + esc(", ".join(failed)))
+    if added:
+        lines.append("\nПроверяю раз в час, об изменениях скажу в чат уведомлений.")
+    else:
+        lines.append("\nФормат: /watch 8.8.8.8 1.1.1.1")
+    return cut("\n".join(lines))
+
+
+def proxy_private_notice(link: str) -> str:
+    return (
+        "🔒 Команда запуска содержит пароль — в группе я её не показываю.\n"
+        "Открой личные сообщения со мной и напиши там /get_proxy (кнопка ниже)."
+    )
 
 
 def check_text(results: dict[str, bool]) -> str:

@@ -37,8 +37,11 @@ async def ping_one(ip: str) -> tuple[str, bool]:
             # 1 = адрес не ответил; 2+ = ошибка самого ping (права/аргументы).
             # В Docker это главный признак «ICMP запрещён», а не «хост лежит».
             if not IS_WINDOWS and proc.returncode >= 2:
-                log.error("ping %s: код %s — проблема окружения (запусти python -m utils.selfcheck)",
-                          ip, proc.returncode)
+                log.warning(
+                    "ping %s: код %s — адрес не пингуется (например, адрес сети x.x.0). "
+                    "Если так со ВСЕМИ адресами — проверь окружение: python -m utils.selfcheck",
+                    ip, proc.returncode,
+                )
             return ip, False
         if IS_WINDOWS:
             # Windows умеет вернуть 0 при "Destination host unreachable".

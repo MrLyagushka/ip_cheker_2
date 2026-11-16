@@ -37,7 +37,7 @@ def test_scan_command_end_to_end(dp, data, bot, msg, monkeypatch):
 def test_scan_via_fsm_two_messages(dp, data, bot, msg, monkeypatch):
     patch_ping(monkeypatch)
     asyncio.run(feed(dp, bot, [msg("/scan", uid=55), msg("8.8.8.8", uid=55, message_id=2)]))
-    assert "Пришли IPv4" in bot.sent[0].text
+    assert "через пробел" in bot.sent[0].text
     assert storage.get_history(55)[0]["target"] == "8.8.8.8"
 
 

@@ -41,8 +41,8 @@ async def cmd_scan(message: Message, command: CommandObject, state: FSMContext) 
     await state.set_state(ScanSG.wait_target)
     await sender.safe_send(
         message.bot, message.chat.id,
-        "Пришли IPv4 (8.8.8.8) или сеть (192.168.0.0)", reply_markup=inline.back(),
-        **sender.thread_kwargs(message),
+        "Пришли один или несколько адресов через пробел:\n8.8.8.8 1.1.1.1 192.168.0.0",
+        reply_markup=inline.back(), **sender.thread_kwargs(message),
     )
 
 
@@ -52,7 +52,8 @@ async def cb_scan_start(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message:
         await sender.safe_edit(
             callback.bot, callback.message.chat.id, callback.message.message_id,
-            "Пришли IPv4 (8.8.8.8) или сеть (192.168.0.0)", reply_markup=inline.back(),
+            "Пришли один или несколько адресов через пробел:\n8.8.8.8 1.1.1.1 192.168.0.0",
+            reply_markup=inline.back(),
         )
     await callback.answer()
 
@@ -83,7 +84,7 @@ async def run_scan(bot, chat_id: int, uid: int, raw: str, thread_id: int | None 
     """
     thread = {"message_thread_id": thread_id} if thread_id else {}
     try:
-        targets, kind = ips_tools.parse_target(raw)
+        targets, kind, label = ips_tools.parse_targets(raw)
     except ValueError as exc:
         await sender.safe_send(bot, chat_id, f"⚠️ {exc}", **thread)
         return
@@ -95,14 +96,13 @@ async def run_scan(bot, chat_id: int, uid: int, raw: str, thread_id: int | None 
         )
         return
 
-    label = targets[0] if kind == "host" else ips_tools.subnet_label(targets[0])
     BUSY.add(uid)
     cancel = asyncio.Event()
     CANCELS[uid] = cancel
     try:
         head = await sender.send(
             bot, chat_id, f"🔍 Проверяю {len(targets)} адрес(ов)…",
-            reply_markup=inline.cancel_scan() if kind == "subnet" else None, **thread,
+            reply_markup=inline.cancel_scan() if len(targets) > 1 else None, **thread,
         )
         head_id = head.message_id if isinstance(head, Message) else None
 
@@ -116,7 +116,7 @@ async def run_scan(bot, chat_id: int, uid: int, raw: str, thread_id: int | None 
         results = await ping.ping_many(
             targets,
             limit=storage.load_settings()["ping_limit"],
-            progress=progress if kind == "subnet" else None,
+            progress=progress if len(targets) > 1 else None,
             cancel=cancel,
         )
     finally:
@@ -132,7 +132,7 @@ async def run_scan(bot, chat_id: int, uid: int, raw: str, thread_id: int | None 
         "total": len(results),
     })
 
-    if kind == "subnet":
+    if kind in ("subnet", "multi"):
         path = storage.save_result(uid, text.result_file(label, results))
         await sender.safe_document(bot, chat_id, FSInputFile(path), caption=summary, **thread)
 

@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from keyboards import inline
@@ -12,23 +13,50 @@ router = Router(name="start")
 
 HELP = (
     "Что умею:\n"
-    "/scan 8.8.8.8 — проверить один IP\n"
+    "/scan 8.8.8.8 1.1.1.1 — проверить несколько адресов через пробел\n"
     "/scan 192.168.0.0 — проверить всю /24 (256 адресов)\n"
     "/tree — история сканов\n"
-    "/watch 8.8.8.8 — добавить IP в мониторинг\n"
+    "/watch 8.8.8.8 1.1.1.1 — добавить адреса в мониторинг (через пробел)\n"
     "/unwatch — убрать IP из мониторинга\n"
     "/myips — мои IP и их статус\n"
     "/help — эта справка\n"
     "/id — показать chat_id и id темы (нужно для настройки алертов)\n"
-    "/get_proxy — поднять свой SOCKS5 и поддержать бота\n"
+    "/get_proxy — поднять свой SOCKS5 и поддержать бота (пароль только в личке)\n"
+    "/cancel — отменить ввод адреса или другой запрос бота\n"
     "/proxies — список прокси участников\n\n"
     "Мониторинг проверяет адреса раз в час и сообщает в общий чат "
     "только когда статус изменился."
 )
 
 
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext) -> None:
+    """Выход из любого ожидания ввода (адрес, IP прокси, текст рассылки)."""
+    had_state = await state.get_state() is not None
+    await state.clear()
+    await sender.safe_send(
+        message.bot, message.chat.id,
+        "Отменил." if had_state else "Нечего отменять.",
+        reply_markup=inline.main_menu(), **sender.thread_kwargs(message),
+    )
+
+
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, command: CommandObject, state: FSMContext) -> None:
+    # Ссылка из группы: t.me/<bot>?start=get_proxy — команду с паролем выдаём только в личке.
+    if (command.args or "") == "get_proxy":
+        if message.chat.type == "private":
+            from handlers import proxy as proxy_handler
+
+            await proxy_handler.ask_host(
+                message.bot, message.chat.id, state, sender.thread_kwargs(message)
+            )
+            return
+        await sender.safe_send(
+            message.bot, message.chat.id, "🔒 Команду с паролем выдаю только в личном чате.",
+            **sender.thread_kwargs(message),
+        )
+        return
     await sender.safe_send(
         message.bot, message.chat.id, f"Привет! Я проверяю доступность IP.\n\n{HELP}",
         reply_markup=inline.main_menu(), **sender.thread_kwargs(message),

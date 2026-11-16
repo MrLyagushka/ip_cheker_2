@@ -1,6 +1,7 @@
 """/get_proxy — участник поднимает свой SOCKS5 и поддерживает бота.
 
-Порядок: бот выдаёт команду с логином/паролем → участник присылает IP сервера →
+Пароль показывается ТОЛЬКО в личных сообщениях: в группе бот даёт ссылку на личку.
+Порядок: команда с доступами → участник присылает IP (можно IP:PORT) →
 бот ждёт запуска, проверяет туннель и сообщает в чат уведомлений.
 Дальше за прокси следит utils/proxy_watch.py (падение → тэг владельца).
 """
@@ -22,32 +23,47 @@ from utils import proxies, proxy_watch, sender, storage, text
 log = logging.getLogger(__name__)
 router = Router(name="proxy")
 
+FORMAT_HINT = "Формат: 162.35.229.164 или 162.35.229.164:1080 (один адрес). Выход — /cancel"
+
 
 class ProxySG(StatesGroup):
     wait_host = State()
 
 
+async def private_notice(bot, chat_id: int, thread: dict) -> None:
+    """В группе — никаких секретов, только ссылка на личный чат."""
+    me = await bot.me()
+    link = f"https://t.me/{me.username}?start=get_proxy"
+    await sender.safe_send(
+        bot, chat_id, text.proxy_private_notice(link),
+        reply_markup=inline.private_link(link), **thread,
+    )
+
+
 async def ask_host(bot, chat_id: int, state: FSMContext, thread: dict) -> None:
+    """Выдаём команду с паролем. Вызывается только для личного чата."""
     login, password = proxies.new_credentials()
     await state.set_state(ProxySG.wait_host)
     await state.update_data(login=login, password=password)
     body = text.proxy_invite(proxies.docker_command(login, password))
     await sender.safe_send(
-        bot, chat_id, body + "\n\nПришли IP сервера, где запустишь контейнер.",
+        bot, chat_id, body + f"\n\nТеперь пришли IP сервера, где запустишь контейнер.\n{FORMAT_HINT}",
         reply_markup=inline.back(), **thread,
     )
 
 
-async def register(message: Message, host_raw: str, login: str | None, password: str | None) -> None:
+async def register(message: Message, host_raw: str, login: str | None, password: str | None) -> bool:
+    """Регистрирует прокси. True — успех, False — адрес не принят (можно повторить)."""
     thread = sender.thread_kwargs(message)
     if not login or not password:
         await sender.safe_send(message.bot, message.chat.id, "Начни заново: /get_proxy", **thread)
-        return
+        return False
     try:
-        host = ips_tools.parse_single(host_raw)
+        host, port = ips_tools.parse_host_port(host_raw)
     except ValueError as exc:
-        await sender.safe_send(message.bot, message.chat.id, f"⚠️ {exc}", **thread)
-        return
+        await sender.safe_send(message.bot, message.chat.id, f"⚠️ {exc}\n{FORMAT_HINT}", **thread)
+        return False
+
     mine = [item for item in storage.all_proxies() if item["owner"] == message.from_user.id]
     if len(mine) >= config.PROXY_MAX_PER_USER:
         await sender.safe_send(
@@ -55,9 +71,10 @@ async def register(message: Message, host_raw: str, login: str | None, password:
             f"⚠️ У тебя уже {len(mine)} прокси (лимит {config.PROXY_MAX_PER_USER}). "
             "Убери лишний: /proxies", **thread,
         )
-        return
+        return False
+
     record = proxies.new_record(
-        message.from_user.id, message.from_user.first_name, host, login, password,
+        message.from_user.id, message.from_user.first_name, host, login, password, port,
     )
     storage.add_proxy(record)
     log.info("Новый прокси %s:%s от %s", host, record["port"], message.from_user.id)
@@ -68,36 +85,47 @@ async def register(message: Message, host_raw: str, login: str | None, password:
         "как только он заработает.",
         reply_markup=inline.back(), **thread,
     )
+    return True
 
 
 @router.message(Command("get_proxy"))
 async def cmd_get_proxy(message: Message, command: CommandObject, state: FSMContext) -> None:
+    thread = sender.thread_kwargs(message)
+    if message.chat.type != "private":
+        await state.clear()
+        await private_notice(message.bot, message.chat.id, thread)
+        return
     if command.args:
         login, password = proxies.new_credentials()
         await state.clear()
         await sender.safe_send(
             message.bot, message.chat.id,
-            text.proxy_invite(proxies.docker_command(login, password)),
-            **sender.thread_kwargs(message),
+            text.proxy_invite(proxies.docker_command(login, password)), **thread,
         )
         await register(message, command.args, login, password)
         return
-    await ask_host(message.bot, message.chat.id, state, sender.thread_kwargs(message))
+    await ask_host(message.bot, message.chat.id, state, thread)
 
 
 @router.callback_query(F.data == "px:new")
 async def cb_new(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message:
-        await ask_host(callback.bot, callback.message.chat.id, state,
-                       sender.thread_kwargs(callback.message))
+        chat = callback.message.chat
+        thread = sender.thread_kwargs(callback.message)
+        if chat.type != "private":
+            await private_notice(callback.bot, chat.id, thread)
+        else:
+            await ask_host(callback.bot, chat.id, state, thread)
     await callback.answer()
 
 
 @router.message(ProxySG.wait_host)
 async def got_host(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    await state.clear()
-    await register(message, message.text or "", data.get("login"), data.get("password"))
+    ok = await register(message, message.text or "", data.get("login"), data.get("password"))
+    if ok or not data.get("login"):
+        await state.clear()
+    # при неверном формате состояние сохраняем: человек просто присылает адрес ещё раз
 
 
 async def show_proxies(bot, chat_id: int, uid: int, message_id: int | None = None,

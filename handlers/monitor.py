@@ -36,35 +36,51 @@ async def show_list(
         await sender.safe_edit(bot, chat_id, message_id, body, reply_markup=markup)
 
 
-async def add_ip(bot, chat_id: int, uid: int, raw: str, thread_id: int | None = None) -> None:
+async def add_ips(bot, chat_id: int, uid: int, raw: str, thread_id: int | None = None) -> None:
+    """Принимает один или несколько адресов через пробел: /watch 8.8.8.8 1.1.1.1"""
     thread = {"message_thread_id": thread_id} if thread_id else {}
-    try:
-        ip = ips_tools.parse_single(raw)
-    except ValueError as exc:
-        await sender.safe_send(bot, chat_id, f"⚠️ {exc}", **thread)
+    tokens = ips_tools.split_tokens(raw)
+    if not tokens:
+        await sender.safe_send(
+            bot, chat_id, "⚠️ Пришли адреса через пробел: /watch 8.8.8.8 1.1.1.1",
+            reply_markup=inline.back(), **thread,
+        )
         return
-    status = await storage.add_tracked(uid, ip)
-    if status == "ok":
-        body = f"✅ {ip} добавлен. Проверяю раз в час, об изменениях скажу в общий чат."
-    elif status == "dup":
-        body = f"ℹ️ {ip} уже в списке."
-    else:
-        body = f"⚠️ Лимит {config.MAX_WATCH} адресов. Убери лишний через /unwatch."
-    await sender.safe_send(bot, chat_id, body, reply_markup=inline.back(), **thread)
+
+    added: list[str] = []
+    dup: list[str] = []
+    failed: list[str] = []
+    for token in tokens:
+        try:
+            ip = ips_tools.parse_single(token)
+        except ValueError:
+            failed.append(token)
+            continue
+        status = await storage.add_tracked(uid, ip)
+        if status == "ok":
+            added.append(ip)
+        elif status == "dup":
+            dup.append(ip)
+        else:
+            failed.append(f"{ip} (лимит {config.MAX_WATCH})")
+            break                      # список заполнен, остальные не мучаем
+    await sender.safe_send(
+        bot, chat_id, text.watch_report(added, dup, failed), reply_markup=inline.back(), **thread,
+    )
 
 
 @router.message(Command("watch"))
 async def cmd_watch(message: Message, command: CommandObject, state: FSMContext) -> None:
     if command.args:
         await state.clear()
-        await add_ip(
+        await add_ips(
             message.bot, message.chat.id, message.from_user.id, command.args,
             thread_id=message.message_thread_id,
         )
         return
     await state.set_state(MonSG.wait_ip)
     await sender.safe_send(
-        message.bot, message.chat.id, "Пришли одиночный IPv4 для мониторинга",
+        message.bot, message.chat.id, "Пришли один или несколько IPv4 через пробел:\n8.8.8.8 1.1.1.1",
         reply_markup=inline.back(), **sender.thread_kwargs(message),
     )
 
@@ -72,7 +88,7 @@ async def cmd_watch(message: Message, command: CommandObject, state: FSMContext)
 @router.message(MonSG.wait_ip)
 async def got_ip(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await add_ip(
+    await add_ips(
         message.bot, message.chat.id, message.from_user.id, message.text or "",
         thread_id=message.message_thread_id,
     )
@@ -101,7 +117,8 @@ async def cb_add(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message:
         await sender.safe_edit(
             callback.bot, callback.message.chat.id, callback.message.message_id,
-            "Пришли одиночный IPv4 для мониторинга", reply_markup=inline.back(),
+            "Пришли один или несколько IPv4 через пробел:\n8.8.8.8 1.1.1.1",
+            reply_markup=inline.back(),
         )
     await callback.answer()
 

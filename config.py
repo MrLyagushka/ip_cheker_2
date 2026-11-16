@@ -76,6 +76,7 @@ PROXY_CHECK_INTERVAL = to_int(_get("PROXY_CHECK_INTERVAL"), 60)  # секунд 
 PROXY_WAIT_HOURS = to_int(_get("PROXY_WAIT_HOURS"), 24)          # сколько ждём запуска прокси
 PROXY_MAX_PER_USER = to_int(_get("PROXY_MAX_PER_USER"), 3)       # заявок на одного участника
 HISTORY_LIMIT = 50                                     # записей истории на юзера
+SCAN_MAX_IPS = to_int(_get("SCAN_MAX_IPS"), 1024)      # адресов за один скан (4 сети /24)
 PING_LIMIT_MAX = 256
 
 DB_FILE = DATA_DIR / "bot.db"          # ВСЕ данные здесь (SQLite, WAL)
