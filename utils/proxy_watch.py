@@ -1,20 +1,29 @@
 """Сеть прокси участников: ждём запуска, тэгаем владельца при падении, переключаемся.
-
 Статусы: waiting (ждём запуска) -> up -> down -> up ... , либо waiting -> expired.
 Все сообщения уходят туда же, куда алерты мониторинга: ALERT_CHAT_ID + тема.
 """
 from __future__ import annotations
-
 import asyncio
 import logging
+import time
 from datetime import datetime
-
 from aiogram.client.session.aiohttp import AiohttpSession
-
 import config
 from utils import proxies, selfcheck, storage, text, watcher
 
 log = logging.getLogger(__name__)
+
+# [NEW] Защита от «дребезга»:
+# - статус down ставим только после FAIL_THRESHOLD подряд провалов;
+# - на основной прокси возвращаемся не раньше чем через MAIN_PROXY_COOLDOWN_SEC
+#   после того, как с него ушли (даже если он уже пингуется).
+FAIL_THRESHOLD = 3
+MAIN_PROXY_COOLDOWN_SEC = 600  # 10 минут стабильности участника перед возвратом
+
+# [NEW] Счётчики подряд идущих провалов по id прокси (в памяти, без миграции БД).
+_fail_counts: dict[str, int] = {}
+# [NEW] Момент, когда мы в последний раз ушли с основного прокси.
+_left_main_at: float = 0.0
 
 
 def hours_since(moment: str) -> float:
@@ -24,14 +33,37 @@ def hours_since(moment: str) -> float:
         return 0.0
 
 
-def next_status(old: str, alive: bool, created: str) -> str:
+# [FIX] next_status теперь учитывает счётчик провалов.
+# Возвращает (новый статус, обновлённый счётчик провалов).
+def next_status(old: str, alive: bool, created: str, proxy_id: str) -> tuple[str, int]:
+    fails = _fail_counts.get(proxy_id, 0)
+
     if alive:
-        return "up"
+        # [NEW] Успех — сбрасываем счётчик провалов.
+        _fail_counts[proxy_id] = 0
+        return "up", 0
+
     if old == "waiting":
-        return "expired" if hours_since(created) >= config.PROXY_WAIT_HOURS else "waiting"
+        if hours_since(created) >= config.PROXY_WAIT_HOURS:
+            _fail_counts[proxy_id] = 0
+            return "expired", 0
+        # [NEW] В waiting не считаем «падения» — просто продолжаем ждать.
+        return "waiting", 0
+
     if old == "expired":
-        return "expired"
-    return "down"
+        return "expired", 0
+
+    # old == "up" или "down" — считаем провалы.
+    fails += 1
+    _fail_counts[proxy_id] = fails
+
+    if fails >= FAIL_THRESHOLD:
+        # [FIX] Раньше было: return "down" при первом провале.
+        # Теперь — только после FAIL_THRESHOLD подряд провалов.
+        return "down", fails
+
+    # Ещё не набрали порог — держим статус "up" (или "down", если уже был down).
+    return old, fails
 
 
 async def notify(bot, record: dict, old: str, new: str) -> None:
@@ -68,14 +100,20 @@ async def switch(bot, new_url: str) -> None:
 
 async def failover(bot, records: list[dict], alive: dict[str, bool]) -> str | None:
     """Авто-переключение. Возвращает 'main', id прокси или None (для логов и тестов)."""
+    global _left_main_at
     active = storage.load_settings().get("proxy") or ""
     main_url = config.PROXY_URL or ""
 
-    # 1. Основной прокси из .env ожил — возвращаемся на него.
+    # 1. Основной прокси из .env ожил — но возвращаемся только после кулдауна.
+    # [NEW] Это убирает «пинг-понг», когда основной прокси нестабилен.
     if main_url and active != main_url and await proxies.check(main_url):
-        await switch(bot, main_url)
-        await watcher.send_alert(bot, "🔁 Основной прокси снова работает — вернулся на него.")
-        return "main"
+        if _left_main_at and (time.monotonic() - _left_main_at) < MAIN_PROXY_COOLDOWN_SEC:
+            log.info("Основной прокси пингуется, но кулдаун ещё не истёк — остаёмся на участнике")
+        else:
+            await switch(bot, main_url)
+            _left_main_at = 0.0
+            await watcher.send_alert(bot, "🔁 Основной прокси снова работает — вернулся на него.")
+            return "main"
 
     # 2. Текущий путь жив — ничего не трогаем.
     known = {proxies.url(record): alive.get(record["id"], False) for record in records}
@@ -92,6 +130,9 @@ async def failover(bot, records: list[dict], alive: dict[str, bool]) -> str | No
         candidate = proxies.url(record)
         if candidate == active:
             continue
+        # [NEW] Запоминаем момент ухода с основного — с него стартует кулдаун.
+        if active == main_url:
+            _left_main_at = time.monotonic()
         await switch(bot, candidate)
         await watcher.send_alert(
             bot,
@@ -119,12 +160,15 @@ async def tick(bot) -> dict:
     """Один проход по всем прокси. Возвращает случившиеся переходы статусов."""
     records = storage.all_proxies()
     if not records:
-        return {}          # сети участников нет — переключаться не на что
+        return {}  # сети участников нет — переключаться не на что
+
     alive = await proxies.check_many({r["id"]: proxies.url(r) for r in records})
+
     changes: dict[str, tuple[str, str]] = {}
     for record in records:
         old = record["status"]
-        new = next_status(old, alive.get(record["id"], False), record["created"])
+        # [FIX] Передаём proxy_id, чтобы next_status вёл свой счётчик провалов.
+        new, _ = next_status(old, alive.get(record["id"], False), record["created"], record["id"])
         storage.set_proxy_status(record["id"], new)
         if new != old:
             changes[record["id"]] = (old, new)
@@ -132,10 +176,12 @@ async def tick(bot) -> dict:
                 await notify(bot, record, old, new)
             except Exception:
                 log.exception("Не удалось уведомить о прокси %s", record["id"])
+
     try:
         await failover(bot, records, alive)
     except Exception:
         log.exception("Переключение прокси не удалось")
+
     return changes
 
 
