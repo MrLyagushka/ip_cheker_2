@@ -20,6 +20,11 @@ log = logging.getLogger(__name__)
 CHECK_URL = "https://api.telegram.org/"
 CHECK_TIMEOUT = 10
 
+# [NEW] Защита от «дребезга» сети:
+# Прокси считается мёртвым (возвращает False) только после FAIL_THRESHOLD неудач подряд.
+FAIL_THRESHOLD = 3
+_fail_counts: dict[str, int] = {}
+
 
 def new_credentials() -> tuple[str, str]:
     """Логин и пароль для контейнера участника. Криптостойкие, не угадываются."""
@@ -77,11 +82,28 @@ async def check_direct(timeout: int = CHECK_TIMEOUT) -> bool:
 
 
 async def check_many(urls: dict[str, str], limit: int = 5) -> dict[str, bool]:
-    """Проверяем параллельно, но не больше limit одновременно."""
+    """Проверяем параллельно, но не больше limit одновременно.
+    
+    [NEW] Теперь функция сама отслеживает подряд идущие провалы по ID прокси (ключу словаря).
+    Возвращает True, если прокси жив, или если он упал менее FAIL_THRESHOLD раз подряд.
+    """
     semaphore = asyncio.Semaphore(limit)
 
     async def one(key: str, proxy_url: str):
         async with semaphore:
-            return key, await check(proxy_url)
+            is_alive = await check(proxy_url)
+            
+            if is_alive:
+                # [NEW] Успех: сбрасываем счётчик провалов для этого ID
+                _fail_counts[key] = 0
+                return key, True
+            else:
+                # [NEW] Провал: увеличиваем счётчик
+                _fail_counts[key] = _fail_counts.get(key, 0) + 1
+                
+                # Возвращаем False (мёртв) только если превысили порог
+                is_dead = _fail_counts[key] >= FAIL_THRESHOLD
+                return key, not is_dead
 
-    return dict(await asyncio.gather(*(one(key, u) for key, u in urls.items())))
+    results = await asyncio.gather(*(one(key, u) for key, u in urls.items()))
+    return dict(results)
